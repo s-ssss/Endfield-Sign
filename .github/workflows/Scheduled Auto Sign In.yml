@@ -23,8 +23,53 @@ jobs:
           chmod +x ./sign-in-program
 
       - name: Run sign-in program
+        id: sign
+        continue-on-error: true
         env:
           USER_TOKENS: ${{ secrets.USER_TOKENS }}
         run: |
-          echo "$USER_TOKENS" > user_tokens.txt
-          ./sign-in-program
+          echo "$USER_TOKENS" | tr ';' '\n' > user_tokens.txt
+          ./sign-in-program 2>&1 | tee sign.log
+
+      - name: Prepare notification text
+        if: always()
+        id: info
+        run: |
+          if [ -f sign.log ]; then
+            LOG=$(cat sign.log)
+          else
+            LOG="No log found"
+          fi
+
+          if [ "${{ steps.sign.outcome }}" = "success" ]; then
+            BASE_TITLE="森空岛签到成功"
+          else
+            BASE_TITLE="森空岛签到失败"
+          fi
+
+          if echo "$LOG" | grep -qiE "401|token.invalid|10001|credential|unauthorized|登录失效|token.*expire"; then
+            TITLE="${BASE_TITLE} [Token可能失效]"
+          else
+            TITLE="$BASE_TITLE"
+          fi
+
+          BODY=$(echo "$LOG" | tail -n 20 | tr '\n' ' ' | cut -c1-300)
+
+          echo "TITLE<<EOF" >> $GITHUB_OUTPUT
+          echo "$TITLE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "BODY<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Send ServerChan notification
+        if: always()
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          TITLE: ${{ steps.info.outputs.TITLE }}
+          BODY: ${{ steps.info.outputs.BODY }}
+        run: |
+          curl -s -G "https://sctapi.ftqq.com/${SERVERCHAN_KEY}.send" \
+            --data-urlencode "title=${TITLE}" \
+            --data-urlencode "desp=${BODY}"
